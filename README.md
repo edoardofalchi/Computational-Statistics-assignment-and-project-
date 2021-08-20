@@ -10,7 +10,7 @@ The problem set instructions are in the pdf file.
 :arrow_right: best way to view the notebook: click [here](https://nbviewer.jupyter.org/github/edoardofalchi/Computational-Statistics-assignment-and-project-/blob/main/Pset%20assignment/CompStats_FINAL_assignment.ipynb) for the rendered notebook
 
 ---
-_ ML individual project_ :   
+_ML individual project_ :   
 I provide both the Rmarkdown report file and the raw codes.  
 
 :arrow_right: best way to view the notebook: click [here](https://raw.githack.com/edoardofalchi/Computational-Statistics-assignment-and-project-/main/project/final-project-report.html) for the rendered html notebook
