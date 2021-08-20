@@ -1,0 +1,505 @@
+---
+title: "Final project Computational Statistics"
+author: "Edoardo Falchi"
+date: "19/8/2021"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(pROC)
+library(ROCR)
+library(MASS)
+library(dummies)
+library(class)
+library(e1071)
+library(plyr)
+library(randomForest)
+library(fishmethods)
+library(Hmisc)
+library(CustomerScoringMetrics)
+library(kernlab)
+library(nnet)
+library(parallel)
+library(doParallel)#speed up model building by using parallel computing
+library(knitr)
+opts_chunk$set(echo = TRUE)
+load("C:/Users/Utente/Desktop/lavoro/final_workspace.RData")
+```
+
+The goal of this project is to compare 4 ML model techniques (logistic, Linear Discriminant Analysis, K-Nearest Neighbor, Random Forest) to evaluate their performance apllied on a dataset in three different scenarios:
+
+* 1. deploying a simulated smaller dataset according to the specifications of the original dataset (10k observations instead of 30k);
+* 2. deploying the original dataset;
+* 3. tackle class imbalances by oversampling for better sensitivity.
+
+For each of the 4 models I’ll perform the task according to the following template:
+
+- Training the model on the training set (tuning the hyper-parameters if needed);  
+- Making prediction on both train and test set;   
+- Calculate error rate for both the sets and store them;  
+- Plotting ROC curve for both the sets and store the area under curve (AUC).   
+
+For a clear presentation purpose, in this report I show the main codes and outputs. You can find the complete codes in the [R folder](https://github.com/edoardofalchi/Computational-Statistics-assignment-and-project-/tree/main/project/R%20codes).
+
+---
+
+# Dataset description
+The dataset contains information on default payments, demographic factors, credit data, history of payment, and bill statements of credit card clients in Taiwan from April 2005 to September 2005. This research employed a binary variable -default payment (Yes = 1, No = 0)- as the response variable.  
+
+Credit risk here means the probability of a delay in the repayment of the credit granted. Hence in a real context, banks are more interested in correctly predict the default status for individuals who default, and as a conseqnece, sensitivity metric plays a key role to their assessment. 
+
+There are 30000 observations and 25 variables:  
+•	ID: ID of each client  
+•	LIMIT_BAL: Amount of given credit in NT dollars (includes individual and family/supplementary credit  
+•	SEX: Gender (1=male, 2=female)   
+•	EDUCATION: (1=graduate school, 2=university, 3=high school, 4=others, 5=unknown, 6=unknown)   
+•	MARRIAGE: Marital status (1=married, 2=single, 3=others)    
+•	AGE: Age in years    
+•	PAY_0: Repayment status in September, 2005 (-1=pay duly, 1=payment delay for one month, 2=payment delay for two months, ... 8=payment delay for eight months, 9=payment delay for nine months and above)    
+•	PAY_2: Repayment status in August, 2005 (scale same as above)    
+•	PAY_3: Repayment status in July, 2005 (scale same as above)    
+•	PAY_4: Repayment status in June, 2005 (scale same as above)     
+•	PAY_5: Repayment status in May, 2005 (scale same as above)     
+•	PAY_6: Repayment status in April, 2005 (scale same as above)     
+•	BILL_AMT1: Amount of bill statement in September, 2005 (NT dollar)     
+•	BILL_AMT2: Amount of bill statement in August, 2005 (NT dollar)    
+•	BILL_AMT3: Amount of bill statement in July, 2005 (NT dollar)    
+•	BILL_AMT4: Amount of bill statement in June, 2005 (NT dollar)    
+•	BILL_AMT5: Amount of bill statement in May, 2005 (NT dollar)    
+•	BILL_AMT6: Amount of bill statement in April, 2005 (NT dollar)   
+•	PAY_AMT1: Amount of previous payment in September, 2005 (NT dollar)    
+•	PAY_AMT2: Amount of previous payment in August, 2005 (NT dollar)    
+•	PAY_AMT3: Amount of previous payment in July, 2005 (NT dollar)    
+•	PAY_AMT4: Amount of previous payment in June, 2005 (NT dollar)    
+•	PAY_AMT5: Amount of previous payment in May, 2005 (NT dollar)    
+•	PAY_AMT6: Amount of previous payment in April, 2005 (NT dollar)     
+•	default.payment.next.month: Default payment (1=yes, 0=no)     
+
+The orginal dataset can be retrieved [here](https://archive.ics.uci.edu/ml/datasets/default+of+credit+card+clients#) and the reference paper can be accessed [here](https://github.com/edoardofalchi/Computational-Statistics-assignment-and-project-/blob/main/project/reference%20paper.pdf).
+
+---
+
+# Data cleaning and feature engineering
+
+```{r eval=FALSE}
+set.seed(321)
+
+#load data
+data <- read.csv("default of credit card clients.csv")
+
+## Droping the unnecessary variable/column
+data<-data[,-1]#There's no use of the column id in the analysis
+##Looking for missing value
+sum(is.na(data))#it is observed that there's no missing values
+##Changing the name of the variable PAY_0 to PAY_1 and default.payment.next.month to target
+names(data)[6]<-"PAY_1"
+names(data)[24] <- "target"
+
+##Transforming the variables SEX,MARRIAGE,EDUCATION and default payment into factors
+df=as.data.frame(data)
+df[c("SEX","MARRIAGE","EDUCATION","target","PAY_1","PAY_2","PAY_3","PAY_4","PAY_5","PAY_6")]= 
+  lapply(df[c("SEX","MARRIAGE","EDUCATION","target","PAY_1","PAY_2","PAY_3","PAY_4","PAY_5","PAY_6")]
+         ,function(x) as.factor(x))                                                                       
+data=df
+rm(df)
+
+#There are some undocumented labels in the factor variables like EDUCATION and MARRIAGE.
+#For example, the labels 0, 5 and 6 of EDUCATION are not documented clearly in the description of the dataset, so I merge these labels with the label 4 that implies qualification other than high school, graduate and university.
+data$EDUCATION <- ifelse(data$EDUCATION == 0 |data$EDUCATION == 5 | data$EDUCATION == 6,
+                         4, data$EDUCATION)
+#Similarly, we merge  0 to 3 for MARRIAGE factor.
+data$MARRIAGE = ifelse(data$MARRIAGE == 0, 3, data$MARRIAGE)
+
+```
+
+```{r}
+summary(data)
+```
+
+Simulate data function:
+```{r eval=FALSE}
+simulate_data <- function(N) {
+  quantitative=data[,c(-2:-4,-6:-11,-24)]
+  qualitative=data[,c(2:4,6:11,24)]
+  df <- setNames(data.frame(matrix(nrow = N, ncol = length(colnames(data)))), 
+                 colnames(data))
+  
+  
+  for (i in 1:ncol(data)){
+    ifelse(colnames(data)[i] %in% colnames(qualitative),
+           df[,i]<-sample(as.numeric(names(table(data[,i]))), N, replace = TRUE, prob = as.data.frame(prop.table(table(data[,i])))$Freq),
+           df[,i]<-remp(N, as.numeric(data[,i]))#with remp() an empirical probability distribution is formed from empirical data with each observation having 1/T probabililty of selection, where T is the number of data points
+    )
+  }
+  
+  ##Transforming qualitative variables SEX,MARRIAGE,EDUCATION and default payment into factors
+  df[c("SEX","MARRIAGE","EDUCATION","target","PAY_1","PAY_2","PAY_3","PAY_4","PAY_5","PAY_6")]<- 
+    lapply(df[c("SEX","MARRIAGE","EDUCATION","target","PAY_1","PAY_2","PAY_3","PAY_4","PAY_5","PAY_6")]
+           ,function(x) as.factor(x))                                                                          
+  
+  return(df)
+}
+
+
+```
+
+# Part 1: (smaller N) simulated dataset starting from the original one
+```{r eval=FALSE}
+sim<-simulate_data(10000) 
+```
+
+```{r eval=FALSE}
+hist_data <- setNames(as.data.frame(data$target), "default")
+hist_sim_data <- setNames(as.data.frame(sim$target), "default")
+hist_data$Data <- "Original"
+hist_sim_data$Data <- "Simulated"
+hist_comb <- rbind(hist_data, hist_sim_data)
+default_status <- ggplot(hist_comb, aes(default, group = Data)) + 
+  geom_bar(aes(y = ..prop..), stat="count") + 
+  scale_y_continuous(labels=scales::percent) +
+  ylab("relative frequencies") +
+  facet_grid(~Data)+
+  theme(aspect.ratio = 1)
+options(repr.plot.width=8, repr.plot.height=3)
+```
+
+```{r fig.cap= "Visually check that the distribution of the classification variable for the original and simulated datasets are similar"}
+default_status
+```
+
+Let's split the combined dataframe into two parts. One is training set, consists of 80% of the data, on which the model(s) will be trained and the other one is test set, consists of remaining 20% of the data, on which the model(s) will be validated.
+```{r eval=FALSE}
+#Data partitioning
+#Splitting the data into test and train sets in 80:20 ratio
+ind=sample(nrow(sim),0.8*nrow(sim),replace = F)
+train=sim[ind,]
+test=sim[-ind,]
+
+#Creating empty vectors for further comparisons
+acc.train=numeric()
+sens.train=numeric() 
+spec.train=numeric()
+auc.train=numeric()
+acc.test=numeric()
+sens.test=numeric() 
+spec.test=numeric()
+auc.test=numeric()
+
+```
+
+## A. Logistic
+```{r eval=FALSE}
+#fitting a logistic model
+model.logit=glm(target~.,data=train,family="binomial")
+
+                          #####  ######  #####
+#For further analysis we might also want to
+#restrict varbiables to the first 10 by importance based on classification model
+imp <- varImp(model.logit)
+impDF<-data.frame(imp[1])
+top10var<- rownames(impDF)[order(imp$importance, decreasing=TRUE)[1:10]]
+frm<-as.formula(paste("target ~ ", paste(top10var, collapse="+")))
+                          #####  ######  #####
+
+#Making prediction for the train set and test set
+pred.logit=predict(model.logit,type="response",newdata = test)
+pred.test=ifelse(pred.logit>0.5,"1","0")
+pred.train=ifelse(predict(model.logit,type="response",newdata = train)>0.5,"1","0")
+
+#Calculate error rate for both train and test set
+conf.train<-confusionMatrix(as.factor(pred.train),(train$target),positive="1")
+conf.test<-confusionMatrix(as.factor(pred.test),(test$target),positive="1")
+acc.train[1]<-conf.train$overall['Accuracy']
+sens.train[1]<-(conf.train$byClass)[1]
+spec.train[1]<-(conf.train$byClass)[2]
+acc.test[1]<-conf.test$overall['Accuracy']
+sens.test[1]<-(conf.test$byClass)[1]
+spec.test[1]<-(conf.test$byClass)[2]
+#Ploting ROC curve and AUC for test and train set
+par(mfrow=c(1,2))
+par(pty="s")
+#For training set
+roc_log.train<-roc(train$target,model.logit$fitted.values,plot=T,col="#69b3a2",print.auc=T,legacy.axes=TRUE,percent = T,
+    xlab="False Positive percentage",ylab="True Positive percentage",lwd=5,main="Train Set")
+#For test set
+roc_log.test<-roc(test$target,pred.logit,plot=T,col="navyblue",print.auc=T,legacy.axes=TRUE,percent = T,
+    xlab="False Positive percentage",ylab="True Positive percentage",lwd=5,main="Test Set")
+
+auc.train[1]=auc(train$target,model.logit$fitted.values)
+auc.test[1]=auc(test$target,pred.logit)
+
+```
+
+## B. LDA
+Besides the formula and training data, one more parameter `prior` is passed to the function lda(), which specifies the prior probabilities of class membership. I use the proportion of the classes in our dataset as our input.
+
+```{r eval=FALSE}
+#prior class proportion
+prop.table(table(data$target))
+#fitting a LDA model
+model.lda=lda(target~.,data=train,prior=c(prop.table(table(data$target))))
+
+#making prediction for both train and test sets
+pred.lda.test=predict(model.lda,test)
+pred.lda.prob=pred.lda.test$posterior[,2]
+pred.lda.train=predict(model.lda,train)
+
+
+#calculate the error rate for both train and test sets
+conf.train<-confusionMatrix(data=pred.lda.train$class,reference=(train$target),positive="1")
+conf.test<-confusionMatrix(data=pred.lda.test$class,reference=(test$target),positive="1")
+acc.train[2]<-conf.train$overall['Accuracy']
+sens.train[2]<-(conf.train$byClass)[1]
+spec.train[2]<-(conf.train$byClass)[2]
+acc.test[2]<-conf.test$overall['Accuracy']
+sens.test[2]<-(conf.test$byClass)[1]
+spec.test[2]<-(conf.test$byClass)[2]
+
+
+#Ploting ROC curve and AUC for test and train set
+par(mfrow=c(1,2))
+par(pty="s")
+#For training set
+roc_lda.train<-roc(response=train$target,predictor=pred.lda.train$posterior[,2],plot=T,col="#69b3a2",print.auc=T,legacy.axes=TRUE,percent = T,
+    xlab="False Positive percentage",ylab="True Positive percentage",lwd=5,main="Train Set")
+#For test set
+roc_lda.test<-roc(response=test$target,predictor=pred.lda.prob,plot=T,col="navyblue",print.auc=T,legacy.axes=TRUE,percent = T,
+    xlab="False Positive percentage",ylab="True Positive percentage",lwd=5,main="Test Set")
+
+auc.train[2]=auc(train$target,pred.lda.train$posterior[,2])
+auc.test[2]=auc(test$target,pred.lda.prob)
+
+```
+
+## C. K-NN
+Any variables that are on a large scale will have a much larger effect on the distance between the observations, and hence on the KNN classifier, than variables that are on a small scale. Let's standardize the data, then all variables will be on a comparable scale. Also let's create one-hot encoded dummies.
+
+```{r eval=FALSE}
+standardized.X=scale(sim[,c(-2:-4,-6:-11,-24)])
+quali.dummy=dummy.data.frame(sim[,c(2:4,6:11)])
+#Merging the normalized data and one-hot encoded dummies
+target<-sim$target
+data.knn=cbind(standardized.X,quali.dummy,target)
+train.knn=data.knn[ind,]
+test.knn=data.knn[-ind,]
+
+model.list=list()#empty list
+v=numeric()
+
+for(i in 1:30){
+  
+  model.list[[i]]=knn(train.knn[,c(-83)],test.knn[,c(-83)],train.knn[,c(83)] ,k=i)
+  tab=table(model.list[[i]],test.knn[,c(83)])
+  v[i]=sum(diag(tab)/sum(tab))
+  
+}
+which.max(v)#index of the K that maximizes accuracy
+
+```
+
+```{r fig.cap= "Best model in terms of accuracy is when hyper-parameter k=12"}
+plot(1:30,v,type="b",xlab="k",ylab="accuracy",main="Elbow plot",font.main=2,col="steelblue3",lwd=4)
+abline(v=which.max(v),col="orange")
+```
+
+```{r eval=FALSE}
+#Prediction and calculating error rate on training set
+model.knn.train=knn3(train.knn[,c(-83)],as.factor(train.knn[,c(83)]),k=which.max(v))
+conf.train<-confusionMatrix(predict(model.knn.train,train.knn[,c(-83)],type = "class"),as.factor(train.knn[,83]),positive="1")
+
+acc.train[3]<-conf.train$overall['Accuracy']
+sens.train[3]<-(conf.train$byClass)[1]
+spec.train[3]<-(conf.train$byClass)[2]
+acc.test[3]<-conf.test$overall['Accuracy']
+sens.test[3]<-(conf.test$byClass)[1]
+spec.test[3]<-(conf.test$byClass)[2]
+#Ploting ROC curve and AUC for test and train set
+par(mfrow=c(1,2))
+par(pty="s")
+roc_knn.train<-roc(train.knn[,c(83)],predict(model.knn.train,train.knn[,c(-83)],type="prob")[,2],plot=T,col="#69b3a2",print.auc=T,legacy.axes=TRUE,
+    percent = T,xlab="False Positive percentage",ylab="True Positive percentage",lwd=5,main="Train Set")
+roc_knn.test<-roc(test.knn[,c(83)],predict(model.knn.train,test.knn[,c(-83)],type="prob")[,2],plot=T,col="navyblue",print.auc=T,legacy.axes=TRUE,percent = T,
+    xlab="False Positive percentage",ylab="True Positive percentage",lwd=5,main="Test Set")
+
+auc.train[3]=auc(train.knn[,c(83)],predict(model.knn.train,train.knn[,c(-83)],type="prob")[,2])
+auc.test[3]=auc(test.knn[,c(83)],predict(model.knn.train,test.knn[,c(-83)],type="prob")[,2])
+
+```
+
+## D. Random Forest 
+
+```{r eval=FALSE}
+data.rf<-cbind(standardized.X,sim[,c(2:4,6:11)],target)
+train.rf<-data.rf[ind,]
+test.rf<-data.rf[-ind,]
+
+no_cores <- detectCores()-1  #Calculate the number of cores
+cl <- makePSOCKcluster(no_cores)#create the cluster for caret to use
+registerDoParallel(cl)
+#Tuning Hyperparameters for RF
+param = trainControl(method = "cv",number = 5 , allowParallel = T,classProbs = T,summaryFunction = twoClassSummary)
+RandomForest_Fit = caret::train(target~.,train.rf, method = 'rf',trControl = param, tuneGrid=data.frame(.mtry = seq(5,20, by=5)))
+stopCluster(cl)
+registerDoSEQ()
+
+#Model Fitting based on the Grid Search
+model.rf=randomForest(target~., data = train.rf, mtry =RandomForest_Fit$bestTune[[1]],maxnodes=30,importance=T)
+
+#Prediction and calculating error rate for test and training sets
+#for test set
+pred.rf= predict(model.rf,newdata = test.rf[,-24],probability=T)
+pred.rf.prob= predict(model.rf,newdata = test.rf[,-24],type="prob")
+conf.test<-confusionMatrix(pred.rf ,test.rf$target,positive="1")
+
+#for training set
+pred.rf.train= predict(model.rf,newdata = train.rf[,-24],probability=T)
+pred.rf.train.prob=predict(model.rf,newdata = train.rf[,-24],type="prob")
+conf.train=confusionMatrix(pred.rf.train,train.rf$target, positive="1")
+
+acc.train[4]<-conf.train$overall['Accuracy']
+sens.train[4]<-(conf.train$byClass)[1]
+spec.train[4]<-(conf.train$byClass)[2]
+acc.test[4]<-conf.test$overall['Accuracy']
+sens.test[4]<-(conf.test$byClass)[1]
+spec.test[4]<-(conf.test$byClass)[2]
+#ROC curve and AUC value for both train and test set
+par(mfrow=c(1,2))
+par(pty="s")
+roc_rf.train<-roc(train.rf$target,(pred.rf.train.prob[,2]),plot=T,
+    col="#69b3a2",print.auc=T,legacy.axes=TRUE,percent = T,xlab="False Positive percentage",
+    ylab="True Positive percentage",lwd=5,main="Train Set")
+roc_rf.test<-roc(test.rf$target,pred.rf.prob[,2],plot=T,col="navyblue",print.auc=T,legacy.axes=TRUE,percent = T,
+    xlab="False Positive percentage",ylab="True Positive percentage",lwd=5,main="Test Set")
+
+auc.train[4] = auc(train.rf$target,(pred.rf.train.prob[,2]))
+auc.test[4] = auc(test.rf$target,pred.rf.prob[,2])
+
+```
+
+
+## CLASSIFICATION EVALUATION
+
+```{r eval=FALSE}
+classification.eval=data.frame(Model=c("Logistic","LDA","KNN","Random forest"),Accuracy_train=acc.train,
+                               Sensitivity_train=sens.train, Specifivity_train=spec.train, AUC_train=auc.train,
+                               Accuracy_test=acc.test, Sensitivity_test=sens.test, Specificity_test=spec.test, AUC_test=auc.test)
+```
+
+```{r}
+kable(classification.eval)
+```
+
+---
+
+# Part 2: (larger N) using original dataset
+As in the previous section, the same fitting procedure is executed. AS footnote, I use `train()` function from caret package instead of using the algorithm’s function directly because besides building the model `train()` does multiple other things like: cross validating the model, tune the hyper parameters for optimal model performance, choose the optimal model based on a given evaluation metric, preprocess the predictors if needed.   
+
+Let's directly jump to the obtained results. In the appendix, the cumulative gains chart of the 4 models are enclosed.
+
+```{r eval=FALSE}
+# plot ROC curves together in one single plot
+rocs_train<- function(){
+  plot(roc_log.train, col = "green", lty=1, main = "ROCs train set")
+  lines(roc_lda.train, col = "red", lty=2)
+  lines(roc_knn.train, col = "orange", lty=3)
+  lines(roc_rf.train, col = "blue", lty=4)
+  legend(57,40,legend=c("Logistic", "LDA","KNN","Random Forest"),
+         col=c("green", "red", "orange","blue"),lty=1:4, cex=0.55)
+}
+rocs_test<- function(){
+  plot(roc_log.test, col = "green", lty=1, main = "ROCs test set")
+  lines(roc_lda.test, col = "red", lty=2)
+  lines(roc_knn.test, col = "orange", lty=3)
+  lines(roc_rf.test, col = "blue", lty=4)
+  legend(57,40,legend=c("Logistic", "LDA","KNN","Random Forest"),
+         col=c("green", "red", "orange","blue"),lty=1:4, cex=0.55)
+}
+
+```
+
+```{r}
+par(mfrow=c(1,2))
+#ROCS train set
+rocs_train()
+#ROCs test set
+rocs_test()
+```
+
+## CLASSIFICATION EVALUATION
+```{r}
+kable(classification.eval_30k)
+```
+
+---
+
+# Part 3: oversampling for better sensitivity
+Since the distribution of the class response is imbalanced (78% class 0 VS 22% class 1), so running a model obviously yields high accuracy. Even random guess will give a close result. Thus, random oversampling of minority class is performed, to get equal proportion of both classes. Random oversampling just replicates the existing minority class data points.
+
+```{r fig.cap="now the dataset is balanced according to the dependent classification variable"}
+prop.table(table(data$target))#imbalanced
+over<-caret::upSample(data[,-24],data$target,yname="target")
+prop.table(table(over$target))
+ggplot(over, aes(x = target)) + 
+  geom_bar()
+```
+
+As in the first section, the same fitting procedure is executed. So let's dive into the findings.
+
+
+
+```{r}
+# plot ROC curves together in one single plot
+par(mfrow=c(1,2))
+#ROCS train set
+rocs_train_bal()
+#ROCs test set
+rocs_test_bal()
+```
+
+## CLASSIFICATION EVALUATION
+
+```{r}
+kable(classification.eval_balanced)
+```
+
+---
+
+# INTERPRETATION OF THE RESULTS
+
+Error rates were often used as the measurement of classification accuracy of models. However, most records in the dataset of credit card customers are non-risky. Therefore, the error rate is insensitive to classification accuracy of models. For the binary classification problem, area under the curve in the ROC chart can offer better solution for comparing the performance of different models than the one did by the error rate.  
+
+In the 1st scenario (N=10k), only KNN seems to do a fair job, while the remaining models behaves as good as randomly predicting.  
+In the 2nd scenario (N=30k), sensitivity and overall performance increase, based on AUC of test set models are equally good.   
+In the 3rd scenario (balanced data), sensitivity increases even further but we naturally lose from the accuracy side. KNN's AUC on the test set outweighs the other models but with a minor gap compared to the 1st scenario.   
+
+The reason for these findings most likely comes from the fact that KNN is a non-parametric approach, so it makes no assumptions about the shape of the decision boundary i.e. KNN performs better than LDA and logistic regression when the decision boundary is highly non-linear. 
+
+---
+
+# APPENDIX - CUMULATIVE GAINS CHART (relative to PART 2, using the original dataset)
+The graph is constructed with the cumulative number of cases (in descending order of probability) on the x-axis and the cumulative number of true positives on the y-axis
+True positives are those observations from the important class (here class 1) that are classified correctly.
+The bisector solid line is a reference line. For any given number of cases (the x-axis value), it represents the expected number of positives we would predict if we did not
+have a model but simply selected cases at random. It provides a benchmark against which we can see performance of the model.
+
+```{r}
+par(mfrow=c(2,2))
+#Cumulative Gain Chart for The Logit
+cumGainsChart(as.numeric(pred.test), as.numeric(test$target), resolution = 1/10)
+#Cumulative Gain Chart for The LDA
+cumGainsChart((pred.lda.prob), (test$target), resolution = 1/10)
+#Cumulative Gain Chart for KNN model
+cumGainsChart((predict(model.knn.train,test.knn[,c(-83)],type="prob")[,2]), (test.knn[,c(83)]), resolution = 1/10)
+#Cumulative Gain Chart for Random Forest 
+cumGainsChart(pred.rf.prob[,2],test.rf$target, resolution = 1/10)
+```
